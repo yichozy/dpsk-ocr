@@ -22,6 +22,14 @@ from processing_utils import (
     re_match,
     process_image_with_refs
 )
+from database import (
+    init_database,
+    create_task,
+    update_task_status,
+    get_task_status,
+    delete_task,
+    get_all_tasks
+)
 
 # Environment setup
 if torch.version.cuda == '11.8':
@@ -46,6 +54,12 @@ app = FastAPI(
     description="OCR service for PDF documents with layout detection",
     version="1.0.0"
 )
+
+# Initialize database on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database on application startup"""
+    init_database()
 
 # Security setup
 security = HTTPBearer()
@@ -141,6 +155,22 @@ def cleanup_job_files(job_id: str):
         shutil.rmtree(job_dir)
 
 
+def process_pdf_background(pdf_path: str, job_id: str, output_dir: Path):
+    """
+    Background task wrapper for PDF processing
+
+    Args:
+        pdf_path: Path to input PDF file
+        job_id: Unique job identifier
+        output_dir: Directory to save outputs
+    """
+    try:
+        process_pdf_internal(pdf_path, job_id, output_dir)
+    except Exception as e:
+        # Ensure status is updated even if something goes wrong
+        update_task_status(job_id, "failed", error_message=str(e))
+
+
 def process_pdf_internal(pdf_path: str, job_id: str, output_dir: Path):
     """
     Internal function to process PDF
@@ -151,12 +181,18 @@ def process_pdf_internal(pdf_path: str, job_id: str, output_dir: Path):
         output_dir: Directory to save outputs
     """
     try:
+        # Update status to processing
+        update_task_status(job_id, "processing")
+
         # Create output directories
         images_dir = output_dir / "images"
         images_dir.mkdir(exist_ok=True)
 
         # Convert PDF to images
         images = pdf_to_images_high_quality(pdf_path)
+
+        # Update total pages
+        update_task_status(job_id, "processing", total_pages=len(images))
 
         # Preprocess images in parallel
         prompt = PROMPT
@@ -230,6 +266,9 @@ def process_pdf_internal(pdf_path: str, job_id: str, output_dir: Path):
 
         pil_to_pdf_img2pdf(draw_images, str(pdf_out_path))
 
+        # Update status to completed
+        update_task_status(job_id, "completed", processed_pages=len(images))
+
         return {
             "success": True,
             "markdown_path": str(mmd_path),
@@ -239,6 +278,9 @@ def process_pdf_internal(pdf_path: str, job_id: str, output_dir: Path):
         }
 
     except Exception as e:
+        # Update status to failed
+        update_task_status(job_id, "failed", error_message=str(e))
+
         return {
             "success": False,
             "error": str(e)
@@ -264,7 +306,7 @@ async def health_check():
 @app.post("/process_pdf", response_model=ProcessingStatus)
 async def process_pdf(
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     authenticated: bool = Depends(verify_token)
 ):
     """
@@ -274,7 +316,7 @@ async def process_pdf(
         file: PDF file to process
 
     Returns:
-        Job ID and status
+        Job ID and status (processing initiated)
     """
     # Validate file type
     if not file.filename.endswith('.pdf'):
@@ -282,6 +324,9 @@ async def process_pdf(
 
     # Generate unique job ID
     job_id = str(uuid.uuid4())
+
+    # Create task in database
+    create_task(job_id, file.filename)
 
     # Create job directory
     job_dir = TEMP_DIR / job_id
@@ -294,24 +339,55 @@ async def process_pdf(
         with open(pdf_path, 'wb') as f:
             f.write(contents)
     except Exception as e:
+        update_task_status(job_id, "failed", error_message=f"Failed to save file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-    # Process PDF
-    result = process_pdf_internal(str(pdf_path), job_id, job_dir)
+    # Add background task to process PDF
+    background_tasks.add_task(process_pdf_background, str(pdf_path), job_id, job_dir)
 
-    if not result["success"]:
-        raise HTTPException(status_code=500, detail=f"Processing failed: {result['error']}")
-
+    # Return immediately with pending status
     return ProcessingStatus(
         job_id=job_id,
-        status="completed",
-        message="PDF processed successfully"
+        status="pending",
+        message="PDF processing initiated. Use /result/{job_id}/status to check progress."
     )
+
+
+@app.get("/result/{job_id}/status")
+async def get_status(job_id: str, authenticated: bool = Depends(verify_token)):
+    """Get processing status for a job"""
+    task = get_task_status(job_id)
+
+    if not task:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return {
+        "job_id": task["job_id"],
+        "status": task["status"],
+        "filename": task["filename"],
+        "total_pages": task["total_pages"],
+        "processed_pages": task["processed_pages"],
+        "created_at": task["created_at"],
+        "updated_at": task["updated_at"],
+        "error_message": task["error_message"]
+    }
 
 
 @app.get("/result/{job_id}/markdown")
 async def get_markdown(job_id: str, authenticated: bool = Depends(verify_token)):
     """Get markdown output for a job"""
+    # Check task status first
+    task = get_task_status(job_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if task["status"] == "pending":
+        raise HTTPException(status_code=202, detail="Processing not started yet")
+    elif task["status"] == "processing":
+        raise HTTPException(status_code=202, detail="Processing in progress")
+    elif task["status"] == "failed":
+        raise HTTPException(status_code=500, detail=f"Processing failed: {task['error_message']}")
+
     mmd_path = TEMP_DIR / job_id / "output.mmd"
 
     if not mmd_path.exists():
@@ -320,12 +396,24 @@ async def get_markdown(job_id: str, authenticated: bool = Depends(verify_token))
     with open(mmd_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    return {"job_id": job_id, "content": content}
+    return {"job_id": job_id, "status": "completed", "content": content}
 
 
 @app.get("/result/{job_id}/markdown_det")
 async def get_markdown_with_detection(job_id: str, authenticated: bool = Depends(verify_token)):
     """Get markdown with detection annotations for a job"""
+    # Check task status first
+    task = get_task_status(job_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if task["status"] == "pending":
+        raise HTTPException(status_code=202, detail="Processing not started yet")
+    elif task["status"] == "processing":
+        raise HTTPException(status_code=202, detail="Processing in progress")
+    elif task["status"] == "failed":
+        raise HTTPException(status_code=500, detail=f"Processing failed: {task['error_message']}")
+
     mmd_det_path = TEMP_DIR / job_id / "output_det.mmd"
 
     if not mmd_det_path.exists():
@@ -334,12 +422,24 @@ async def get_markdown_with_detection(job_id: str, authenticated: bool = Depends
     with open(mmd_det_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    return {"job_id": job_id, "content": content}
+    return {"job_id": job_id, "status": "completed", "content": content}
 
 
 @app.get("/result/{job_id}/layout_pdf")
 async def get_layout_pdf(job_id: str, authenticated: bool = Depends(verify_token)):
     """Download layout visualization PDF"""
+    # Check task status first
+    task = get_task_status(job_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if task["status"] == "pending":
+        raise HTTPException(status_code=202, detail="Processing not started yet")
+    elif task["status"] == "processing":
+        raise HTTPException(status_code=202, detail="Processing in progress")
+    elif task["status"] == "failed":
+        raise HTTPException(status_code=500, detail=f"Processing failed: {task['error_message']}")
+
     pdf_path = TEMP_DIR / job_id / "output_layouts.pdf"
 
     if not pdf_path.exists():
@@ -355,6 +455,18 @@ async def get_layout_pdf(job_id: str, authenticated: bool = Depends(verify_token
 @app.get("/result/{job_id}/images")
 async def list_extracted_images(job_id: str, authenticated: bool = Depends(verify_token)):
     """List all extracted images for a job"""
+    # Check task status first
+    task = get_task_status(job_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if task["status"] == "pending":
+        raise HTTPException(status_code=202, detail="Processing not started yet")
+    elif task["status"] == "processing":
+        raise HTTPException(status_code=202, detail="Processing in progress")
+    elif task["status"] == "failed":
+        raise HTTPException(status_code=500, detail=f"Processing failed: {task['error_message']}")
+
     images_dir = TEMP_DIR / job_id / "images"
 
     if not images_dir.exists():
@@ -363,6 +475,7 @@ async def list_extracted_images(job_id: str, authenticated: bool = Depends(verif
     images = list(images_dir.glob("*.jpg"))
     return {
         "job_id": job_id,
+        "status": "completed",
         "images": [img.name for img in images],
         "count": len(images)
     }
@@ -371,6 +484,18 @@ async def list_extracted_images(job_id: str, authenticated: bool = Depends(verif
 @app.get("/result/{job_id}/images/{image_name}")
 async def get_extracted_image(job_id: str, image_name: str, authenticated: bool = Depends(verify_token)):
     """Download a specific extracted image"""
+    # Check task status first
+    task = get_task_status(job_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if task["status"] == "pending":
+        raise HTTPException(status_code=202, detail="Processing not started yet")
+    elif task["status"] == "processing":
+        raise HTTPException(status_code=202, detail="Processing in progress")
+    elif task["status"] == "failed":
+        raise HTTPException(status_code=500, detail=f"Processing failed: {task['error_message']}")
+
     image_path = TEMP_DIR / job_id / "images" / image_name
 
     if not image_path.exists():
@@ -383,10 +508,35 @@ async def get_extracted_image(job_id: str, image_name: str, authenticated: bool 
     )
 
 
+@app.get("/tasks")
+async def list_tasks(status: Optional[str] = None, authenticated: bool = Depends(verify_token)):
+    """
+    List all tasks, optionally filtered by status
+
+    Args:
+        status: Optional filter by status (pending, processing, completed, failed)
+
+    Returns:
+        List of all tasks
+    """
+    tasks = get_all_tasks(status)
+    return {"tasks": tasks, "count": len(tasks)}
+
+
 @app.delete("/result/{job_id}")
 async def delete_job(job_id: str, authenticated: bool = Depends(verify_token)):
-    """Delete all files associated with a job"""
+    """Delete all files and database entry associated with a job"""
+    # Check if job exists
+    task = get_task_status(job_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Delete files
     cleanup_job_files(job_id)
+
+    # Delete from database
+    delete_task(job_id)
+
     return {"job_id": job_id, "status": "deleted"}
 
 
