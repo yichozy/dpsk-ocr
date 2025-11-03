@@ -349,7 +349,7 @@ async def process_pdf(
     return ProcessingStatus(
         job_id=job_id,
         status="pending",
-        message="PDF processing initiated. Use /result/{job_id}/status to check progress."
+        message=f"PDF processing initiated. Use /result/{job_id}/status to check progress."
     )
 
 
