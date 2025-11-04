@@ -7,6 +7,8 @@ SCRIPT_NAME="serve_pdf.py"
 PID_FILE="/tmp/deepseek_ocr.pid"
 LOG_FILE="/tmp/deepseek_ocr.log"
 PORT=8000
+REDIS_PID_FILE="/var/run/redis/redis-server.pid"
+REDIS_PORT=6379
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -17,10 +19,66 @@ NC='\033[0m' # No Color
 echo "=== $SERVICE_NAME ==="
 echo ""
 
+# Function to check if Redis is running
+is_redis_running() {
+    if redis-cli -p $REDIS_PORT ping > /dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+# Function to start Redis
+start_redis() {
+    echo "Starting Redis server..."
+
+    # Create directories if they don't exist
+    mkdir -p /var/run/redis /var/log/redis /var/lib/redis 2>/dev/null
+
+    # Start Redis
+    redis-server --daemonize yes \
+        --dir /var/lib/redis \
+        --logfile /var/log/redis/redis-server.log \
+        --pidfile $REDIS_PID_FILE \
+        --port $REDIS_PORT \
+        --bind 0.0.0.0 \
+        --appendonly yes > /dev/null 2>&1
+
+    # Wait for Redis to start
+    sleep 1
+
+    if is_redis_running; then
+        echo -e "${GREEN}✓ Redis started successfully${NC}"
+        return 0
+    else
+        echo -e "${RED}✗ Failed to start Redis${NC}"
+        return 1
+    fi
+}
+
+# Check if Redis is installed
+if ! command -v redis-server &> /dev/null; then
+    echo -e "${YELLOW}Warning: Redis is not installed${NC}"
+    echo "Redis is recommended for task queue management"
+    echo "Install with: ./install/install_redis_docker.sh or sudo ./install/install_redis_standalone.sh"
+    echo ""
+else
+    # Check if Redis is running
+    if is_redis_running; then
+        echo -e "${GREEN}✓ Redis is already running${NC}"
+    else
+        # Start Redis
+        if ! start_redis; then
+            echo -e "${YELLOW}Warning: Service will start without Redis${NC}"
+            echo "You can start Redis manually with: ./redis_start.sh"
+        fi
+    fi
+    echo ""
+fi
+
 # Check if virtual environment exists
 if [ ! -f "$PYTHON_BIN" ]; then
     echo -e "${RED}Error: Virtual environment not found at .venv/${NC}"
-    echo "Please run ./install.sh first"
+    echo "Please run ./install/install.sh first"
     exit 1
 fi
 

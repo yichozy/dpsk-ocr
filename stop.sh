@@ -4,6 +4,8 @@
 SERVICE_NAME="DeepSeek OCR PDF Service"
 PID_FILE="/tmp/deepseek_ocr.pid"
 LOG_FILE="/tmp/deepseek_ocr.log"
+REDIS_PID_FILE="/var/run/redis/redis-server.pid"
+REDIS_PORT=6379
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -106,4 +108,71 @@ if [ -f "$LOG_FILE" ]; then
     echo ""
     echo "Service logs available at: $LOG_FILE"
 fi
+
+# Stop Redis if it's running
+echo ""
+echo "Stopping Redis server..."
+
+# Function to stop Redis
+stop_redis() {
+    # Try graceful shutdown via redis-cli first
+    if redis-cli -p $REDIS_PORT ping > /dev/null 2>&1; then
+        redis-cli -p $REDIS_PORT SHUTDOWN NOSAVE 2>/dev/null || redis-cli -p $REDIS_PORT SHUTDOWN 2>/dev/null
+        sleep 1
+
+        if ! redis-cli -p $REDIS_PORT ping > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ Redis stopped gracefully${NC}"
+            rm -f "$REDIS_PID_FILE"
+            return 0
+        fi
+    fi
+
+    # Force stop if still running
+    if [ -f "$REDIS_PID_FILE" ]; then
+        REDIS_PID=$(cat "$REDIS_PID_FILE")
+        if ps -p "$REDIS_PID" > /dev/null 2>&1; then
+            echo "Force stopping Redis (PID: $REDIS_PID)..."
+            kill -TERM "$REDIS_PID" 2>/dev/null
+            sleep 1
+
+            if ! ps -p "$REDIS_PID" > /dev/null 2>&1; then
+                echo -e "${GREEN}✓ Redis stopped${NC}"
+            else
+                kill -9 "$REDIS_PID" 2>/dev/null
+                sleep 1
+                echo -e "${GREEN}✓ Redis force-stopped${NC}"
+            fi
+        fi
+        rm -f "$REDIS_PID_FILE"
+    fi
+
+    # Check for any remaining redis-server processes
+    if pgrep -f "redis-server" > /dev/null; then
+        echo "Stopping remaining Redis processes..."
+        pkill -9 -f "redis-server"
+        sleep 1
+    fi
+
+    # Final check
+    if redis-cli -p $REDIS_PORT ping > /dev/null 2>&1; then
+        echo -e "${YELLOW}Warning: Redis may still be running${NC}"
+        return 1
+    else
+        echo -e "${GREEN}✓ Redis is stopped${NC}"
+        return 0
+    fi
+}
+
+# Check if Redis is installed
+if command -v redis-server &> /dev/null; then
+    # Check if Redis is running
+    if redis-cli -p $REDIS_PORT ping > /dev/null 2>&1; then
+        stop_redis
+    else
+        echo "Redis is not running"
+    fi
+else
+    echo "Redis is not installed (skipping)"
+fi
+
 echo ""

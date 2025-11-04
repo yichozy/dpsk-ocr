@@ -5,6 +5,9 @@ SERVICE_NAME="DeepSeek OCR PDF Service"
 PID_FILE="/tmp/deepseek_ocr.pid"
 LOG_FILE="/tmp/deepseek_ocr.log"
 PORT=8000
+REDIS_PID_FILE="/var/run/redis/redis-server.pid"
+REDIS_PORT=6379
+REDIS_LOG_FILE="/var/log/redis/redis-server.log"
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -70,6 +73,74 @@ if command -v nvidia-smi &> /dev/null; then
         awk -F', ' '{printf "  GPU: %s\n  Memory: %s MB / %s MB (%.1f%%)\n  Utilization: %s%%\n  Temperature: %s°C\n", $1, $2, $3, ($2/$3)*100, $4, $5}'
 else
     echo "  nvidia-smi not available"
+fi
+
+echo ""
+
+# Check Redis status
+echo "Redis Status:"
+if command -v redis-server &> /dev/null; then
+    if redis-cli -p $REDIS_PORT ping > /dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ Redis is RUNNING${NC}"
+
+        # Get Redis info
+        REDIS_VERSION=$(redis-cli -p $REDIS_PORT INFO server 2>/dev/null | grep "redis_version:" | cut -d: -f2 | tr -d '\r')
+        REDIS_UPTIME=$(redis-cli -p $REDIS_PORT INFO server 2>/dev/null | grep "uptime_in_seconds:" | cut -d: -f2 | tr -d '\r')
+        REDIS_MEMORY=$(redis-cli -p $REDIS_PORT INFO memory 2>/dev/null | grep "used_memory_human:" | cut -d: -f2 | tr -d '\r')
+        REDIS_CLIENTS=$(redis-cli -p $REDIS_PORT INFO clients 2>/dev/null | grep "connected_clients:" | cut -d: -f2 | tr -d '\r')
+
+        if [ -n "$REDIS_VERSION" ]; then
+            echo "  Version: $REDIS_VERSION"
+        fi
+
+        if [ -n "$REDIS_UPTIME" ]; then
+            # Convert uptime to human readable format
+            DAYS=$((REDIS_UPTIME / 86400))
+            HOURS=$(((REDIS_UPTIME % 86400) / 3600))
+            MINUTES=$(((REDIS_UPTIME % 3600) / 60))
+            SECONDS=$((REDIS_UPTIME % 60))
+
+            if [ $DAYS -gt 0 ]; then
+                echo "  Uptime: ${DAYS}d ${HOURS}h ${MINUTES}m"
+            elif [ $HOURS -gt 0 ]; then
+                echo "  Uptime: ${HOURS}h ${MINUTES}m ${SECONDS}s"
+            else
+                echo "  Uptime: ${MINUTES}m ${SECONDS}s"
+            fi
+        fi
+
+        if [ -n "$REDIS_MEMORY" ]; then
+            echo "  Memory: $REDIS_MEMORY"
+        fi
+
+        if [ -n "$REDIS_CLIENTS" ]; then
+            echo "  Clients: $REDIS_CLIENTS"
+        fi
+
+        # Check queue status
+        QUEUE_LENGTH=$(redis-cli -p $REDIS_PORT LLEN "rq:queue:deepseek_ocr_tasks" 2>/dev/null)
+        if [ -n "$QUEUE_LENGTH" ] && [ "$QUEUE_LENGTH" != "0" ]; then
+            echo -e "  Queue: ${YELLOW}$QUEUE_LENGTH tasks pending${NC}"
+        else
+            echo "  Queue: Empty"
+        fi
+
+        # Get PID if available
+        if [ -f "$REDIS_PID_FILE" ]; then
+            REDIS_PID=$(cat "$REDIS_PID_FILE")
+            echo "  PID: $REDIS_PID"
+        fi
+    else
+        echo -e "  ${RED}✗ Redis is NOT running${NC}"
+
+        # Check for stale PID file
+        if [ -f "$REDIS_PID_FILE" ]; then
+            echo -e "  ${YELLOW}⚠ Stale PID file exists${NC}"
+        fi
+    fi
+else
+    echo -e "  ${YELLOW}⚠ Redis is not installed${NC}"
+    echo "  Install with: ./install/install_redis_docker.sh or sudo ./install/install_redis_standalone.sh"
 fi
 
 echo ""

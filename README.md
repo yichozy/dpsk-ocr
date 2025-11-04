@@ -6,6 +6,7 @@ Complete OCR service for PDF documents with layout detection, powered by DeepSee
 
 - [Quick Start](#quick-start)
 - [Installation](#installation)
+- [Redis Setup (Optional)](#redis-setup-optional)
 - [Service Management](#service-management)
 - [Authentication](#authentication)
 - [API Usage](#api-usage)
@@ -27,7 +28,7 @@ Complete OCR service for PDF documents with layout detection, powered by DeepSee
 
 1. Run the installation script:
 ```bash
-./install.sh
+./install/install.sh
 ```
 
 This will install:
@@ -82,8 +83,8 @@ python3.12 -m venv .venv
 
 2. **Run installation script**:
 ```bash
-chmod +x install.sh
-./install.sh
+chmod +x install/install.sh
+./install/install.sh
 ```
 
 The script will:
@@ -98,6 +99,61 @@ The script will:
 ```bash
 .venv/bin/python -c "import torch, vllm; print(f'PyTorch: {torch.__version__}, vLLM: {vllm.__version__}')"
 ```
+
+---
+
+## Redis Setup (Optional)
+
+Redis can be used as a message broker to ensure tasks are processed sequentially (one at a time), preventing concurrent GPU access issues. This is optional but recommended for production use.
+
+### Quick Redis Installation
+
+**Option 1: Docker (Recommended)**
+```bash
+chmod +x install/install_redis_docker.sh
+./install/install_redis_docker.sh
+```
+
+**Option 2: Standalone System Installation**
+```bash
+chmod +x install/install_redis_standalone.sh
+sudo ./install/install_redis_standalone.sh
+```
+
+### Configuration
+
+After installing Redis, update your `.env` file:
+
+```bash
+# Copy example if you haven't already
+cp .env.example .env
+
+# Edit .env and uncomment Redis settings:
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+QUEUE_NAME=deepseek_ocr_tasks
+MAX_WORKERS=1  # Process one task at a time
+```
+
+### Install Python Dependencies
+
+```bash
+.venv/bin/pip install redis rq
+```
+
+### Verify Redis
+
+```bash
+# Test connection
+redis-cli ping
+# Should return: PONG
+
+# Or with Docker
+docker exec -it deepseek-redis redis-cli ping
+```
+
+For detailed Redis setup instructions, see [REDIS_SETUP.md](REDIS_SETUP.md).
 
 ---
 
@@ -672,7 +728,8 @@ server {
 ├── deepseek_ocr.py           # DeepSeek OCR model
 ├── config.py                 # Configuration
 ├── requirements.txt          # Python dependencies
-├── install.sh                # Installation script
+├── install/                  # Installation scripts
+│   └── install.sh            # Installation script
 ├── run.sh                    # Start service script
 ├── stop.sh                   # Stop service script
 ├── status.sh                 # Status check script
@@ -749,7 +806,7 @@ This service uses DeepSeek-OCR model. Please refer to the model's license for us
 
 ```bash
 # Installation
-./install.sh
+./install/install.sh
 
 # Service Management
 ./run.sh          # Start service
