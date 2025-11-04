@@ -30,6 +30,7 @@ from database import (
     delete_task,
     get_all_tasks
 )
+from task_queue import get_queue, shutdown_queue
 
 # Environment setup
 if torch.version.cuda == '11.8':
@@ -55,11 +56,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Initialize database on startup
+# Initialize task queue (global instance)
+task_queue = None
+
+# Initialize database and queue on startup
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on application startup"""
+    """Initialize database and task queue on application startup"""
+    global task_queue
     init_database()
+    # Initialize queue with 1 worker for sequential processing
+    task_queue = get_queue(max_workers=1)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on application shutdown"""
+    shutdown_queue()
 
 # Security setup
 security = HTTPBearer()
@@ -303,10 +315,29 @@ async def health_check():
     return {"status": "healthy", "model_loaded": True}
 
 
+@app.get("/queue/status")
+async def queue_status(authenticated: bool = Depends(verify_token)):
+    """Get current queue status"""
+    queue_size = task_queue.get_queue_size()
+    all_tasks = task_queue.get_all_tasks()
+
+    # Separate tasks by status
+    queued = [tid for tid, info in all_tasks.items() if info['status'] == 'queued']
+    processing = [tid for tid, info in all_tasks.items() if info['status'] == 'processing']
+
+    return {
+        "queue_size": queue_size,
+        "total_tasks": len(all_tasks),
+        "queued_tasks": len(queued),
+        "processing_tasks": len(processing),
+        "queued_task_ids": queued,
+        "processing_task_ids": processing
+    }
+
+
 @app.post("/process_pdf", response_model=ProcessingStatus)
 async def process_pdf(
     file: UploadFile = File(...),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     authenticated: bool = Depends(verify_token)
 ):
     """
@@ -342,14 +373,17 @@ async def process_pdf(
         update_task_status(job_id, "failed", error_message=f"Failed to save file: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
 
-    # Add background task to process PDF
-    background_tasks.add_task(process_pdf_background, str(pdf_path), job_id, job_dir)
+    # Add task to queue for sequential processing
+    task_queue.add_task(job_id, process_pdf_background, str(pdf_path), job_id, job_dir)
+
+    # Get current queue size
+    queue_size = task_queue.get_queue_size()
 
     # Return immediately with pending status
     return ProcessingStatus(
         job_id=job_id,
         status="pending",
-        message=f"PDF processing initiated. Use /result/{job_id}/status to check progress."
+        message=f"PDF processing queued (position: {queue_size}). Use /result/{job_id}/status to check progress."
     )
 
 
@@ -536,6 +570,9 @@ async def delete_job(job_id: str, authenticated: bool = Depends(verify_token)):
 
     # Delete from database
     delete_task(job_id)
+
+    # Remove from queue tracking
+    task_queue.remove_task_info(job_id)
 
     return {"job_id": job_id, "status": "deleted"}
 
