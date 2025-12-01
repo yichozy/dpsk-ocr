@@ -102,7 +102,7 @@ llm = LLM(
     swap_space=0,
     max_num_seqs=MAX_CONCURRENCY,
     tensor_parallel_size=1,
-    gpu_memory_utilization=0.9,
+    gpu_memory_utilization=0.8,
     disable_mm_preprocessor_cache=True
 )
 
