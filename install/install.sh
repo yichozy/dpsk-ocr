@@ -10,11 +10,9 @@ pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https
 # Download and install vllm wheel
 echo "Downloading vllm wheel..."
 
-wget https://github.com/vllm-project/vllm/releases/download/v0.8.5/vllm-0.8.5+cu118-cp38-abi3-manylinux1_x86_64.whl -P /tmp/
+wget https://github.com/vllm-project/vllm/releases/download/v0.8.5/vllm-0.8.5+cu118-cp38-abi3-manylinux1_x86_64.whl -P .
 
-pip install /tmp/vllm-0.8.5+cu118-cp38-abi3-manylinux1_x86_64.whl
-
-rm /tmp/vllm-0.8.5+cu118-cp38-abi3-manylinux1_x86_64.whl
+pip install ./vllm-0.8.5+cu118-cp38-abi3-manylinux1_x86_64.whl
 
 # Install requirements excluding system-specific packages
 pip install -r ../requirements.txt --ignore-installed dbus-python python-apt || true
@@ -37,3 +35,6 @@ echo "     nano .env"
 echo ""
 echo "See README_AUTH.md for more details on authentication."
 echo ""
+
+
+mkdir -p tmp/pdf_ocr
