@@ -17,6 +17,9 @@ NC='\033[0m' # No Color
 echo "=== $SERVICE_NAME ==="
 echo ""
 
+# Ensure temp directory exists
+mkdir -p tmp/pdf_ocr
+
 # Check if virtual environment exists
 if [ ! -f "$PYTHON_BIN" ]; then
     echo -e "${RED}Error: Virtual environment not found at .venv/${NC}"
