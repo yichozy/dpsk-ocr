@@ -3,6 +3,7 @@ import io
 import uuid
 import shutil
 import torch
+import hashlib
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -28,7 +29,9 @@ from database import (
     update_task_status,
     get_task_status,
     delete_task,
-    get_all_tasks
+    delete_task,
+    get_all_tasks,
+    get_completed_task_by_hash
 )
 from task_queue import get_queue, shutdown_queue
 
@@ -353,11 +356,29 @@ async def process_pdf(
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
-    # Generate unique job ID
-    job_id = str(uuid.uuid4())
+    # Read file content first to compute hash
+    try:
+        contents = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
 
-    # Create task in database
-    create_task(job_id, file.filename)
+    # Generate hash for the file content
+    file_hash = hashlib.sha256(contents).hexdigest()
+
+    # Check for existing completed task with same hash
+    existing_task = get_completed_task_by_hash(file_hash)
+    if existing_task:
+        # Check if the result file actually exists
+        existing_mmd_path = TEMP_DIR / existing_task['job_id'] / "output.mmd"
+        if existing_mmd_path.exists():
+            return ProcessingStatus(
+                job_id=existing_task['job_id'],
+                status="completed",
+                message="Retrieved from cache (file already processed)"
+            )
+
+    # Generate unique job ID for new task
+    job_id = str(uuid.uuid4())
 
     # Create job directory
     job_dir = TEMP_DIR / job_id
@@ -366,12 +387,15 @@ async def process_pdf(
     # Save uploaded file
     pdf_path = job_dir / "input.pdf"
     try:
-        contents = await file.read()
         with open(pdf_path, 'wb') as f:
             f.write(contents)
     except Exception as e:
-        update_task_status(job_id, "failed", error_message=f"Failed to save file: {str(e)}")
+        # Cleanup if save fails
+        cleanup_job_files(job_id)
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+    # Create task in database
+    create_task(job_id, file.filename, file_hash)
 
     # Add task to queue for sequential processing
     task_queue.add_task(job_id, process_pdf_background, str(pdf_path), job_id, job_dir)

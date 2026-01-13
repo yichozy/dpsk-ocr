@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import threading
 from datetime import datetime
@@ -6,7 +7,7 @@ from typing import Optional, Dict, Any
 from contextlib import contextmanager
 
 # Database path
-DB_PATH = Path("task_status.db")
+DB_PATH = Path(os.getenv("SQLITE_PATH", "task_status.db"))
 
 # Thread-local storage for database connections
 _thread_local = threading.local()
@@ -34,6 +35,13 @@ def get_db():
 
 def init_database():
     """Initialize the database with required tables"""
+    # Ensure the parent directory exists
+    try:
+        if not DB_PATH.parent.exists():
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"Warning: Failed to create database directory {DB_PATH.parent}: {e}")
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -45,9 +53,16 @@ def init_database():
                 error_message TEXT,
                 filename TEXT,
                 total_pages INTEGER,
-                processed_pages INTEGER
+                processed_pages INTEGER,
+                file_hash TEXT
             )
         """)
+
+        # Migration: Add file_hash column if it doesn't exist (for existing databases)
+        cursor.execute("PRAGMA table_info(tasks)")
+        columns = [info[1] for info in cursor.fetchall()]
+        if 'file_hash' not in columns:
+            cursor.execute("ALTER TABLE tasks ADD COLUMN file_hash TEXT")
 
         # Create index on status for faster queries
         cursor.execute("""
@@ -59,16 +74,22 @@ def init_database():
             CREATE INDEX IF NOT EXISTS idx_created_at ON tasks(created_at)
         """)
 
+        # Create index on file_hash for duplicate detection
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_hash ON tasks(file_hash)
+        """)
+
         conn.commit()
 
 
-def create_task(job_id: str, filename: str) -> bool:
+def create_task(job_id: str, filename: str, file_hash: Optional[str] = None) -> bool:
     """
     Create a new task in the database
 
     Args:
         job_id: Unique job identifier
         filename: Original filename
+        file_hash: SHA-256 hash of the file content
 
     Returns:
         True if successful, False otherwise
@@ -78,9 +99,9 @@ def create_task(job_id: str, filename: str) -> bool:
             cursor = conn.cursor()
             now = datetime.utcnow().isoformat()
             cursor.execute("""
-                INSERT INTO tasks (job_id, status, created_at, updated_at, filename, processed_pages)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (job_id, "pending", now, now, filename, 0))
+                INSERT INTO tasks (job_id, status, created_at, updated_at, filename, processed_pages, file_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (job_id, "pending", now, now, filename, 0, file_hash))
             return True
     except Exception as e:
         print(f"Error creating task: {e}")
@@ -153,7 +174,7 @@ def get_task_status(job_id: str) -> Optional[Dict[str, Any]]:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT job_id, status, created_at, updated_at, error_message,
-                       filename, total_pages, processed_pages
+                       filename, total_pages, processed_pages, file_hash
                 FROM tasks
                 WHERE job_id = ?
             """, (job_id,))
@@ -164,6 +185,38 @@ def get_task_status(job_id: str) -> Optional[Dict[str, Any]]:
             return None
     except Exception as e:
         print(f"Error getting task status: {e}")
+        return None
+
+
+def get_completed_task_by_hash(file_hash: str) -> Optional[Dict[str, Any]]:
+    """
+    Find a completed task with the given file hash
+
+    Args:
+        file_hash: SHA-256 hash of file content
+
+    Returns:
+        Task dictionary or None
+    """
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            # Find the most recent completed task with this hash
+            cursor.execute("""
+                SELECT job_id, status, created_at, updated_at, error_message,
+                       filename, total_pages, processed_pages, file_hash
+                FROM tasks
+                WHERE file_hash = ? AND status = 'completed'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (file_hash,))
+
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+    except Exception as e:
+        print(f"Error getting completed task by hash: {e}")
         return None
 
 
@@ -203,7 +256,7 @@ def get_all_tasks(status: Optional[str] = None) -> list[Dict[str, Any]]:
             if status:
                 cursor.execute("""
                     SELECT job_id, status, created_at, updated_at, error_message,
-                           filename, total_pages, processed_pages
+                           filename, total_pages, processed_pages, file_hash
                     FROM tasks
                     WHERE status = ?
                     ORDER BY created_at DESC
@@ -211,7 +264,7 @@ def get_all_tasks(status: Optional[str] = None) -> list[Dict[str, Any]]:
             else:
                 cursor.execute("""
                     SELECT job_id, status, created_at, updated_at, error_message,
-                           filename, total_pages, processed_pages
+                           filename, total_pages, processed_pages, file_hash
                     FROM tasks
                     ORDER BY created_at DESC
                 """)
@@ -248,3 +301,4 @@ def cleanup_old_tasks(days: int = 7) -> int:
     except Exception as e:
         print(f"Error cleaning up old tasks: {e}")
         return 0
+
