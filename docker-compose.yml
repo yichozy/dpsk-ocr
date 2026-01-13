@@ -7,9 +7,9 @@ services:
     container_name: dpsk-ocr
     ports:
       - "8000:8000"
-    # Load environment variables from .env file
-    env_file:
-      - .env
+    # Environment variables
+    environment:
+      - AUTH_TOKEN=${AUTH_TOKEN}
     # Map tmp directory to host to persist logs or inspect temp files if needed
     volumes:
       - ./tmp:/app/tmp
