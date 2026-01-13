@@ -7,7 +7,14 @@ from typing import Optional, Dict, Any
 from contextlib import contextmanager
 
 # Database path
-DB_PATH = Path(os.getenv("SQLITE_PATH", "task_status.db"))
+raw_path = os.getenv("SQLITE_PATH", "task_status.db")
+DB_PATH = Path(raw_path)
+
+# Handle case where user provides a directory path
+if DB_PATH.is_dir() or raw_path.endswith('/') or raw_path.endswith('\\'):
+    DB_PATH = DB_PATH / "task_status.db"
+
+print(f"Using Database Path: {DB_PATH.absolute()}")
 
 # Thread-local storage for database connections
 _thread_local = threading.local()
