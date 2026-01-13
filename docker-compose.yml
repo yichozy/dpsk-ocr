@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  ocr-service:
+    build: .
+    image: dpsk-ocr:latest
+    container_name: dpsk-ocr
+    ports:
+      - "8000:8000"
+    # Load environment variables from .env file
+    env_file:
+      - .env
+    # Map tmp directory to host to persist logs or inspect temp files if needed
+    volumes:
+      - ./tmp:/app/tmp
+      # Uncomment the next line if you want to map a local model directory to avoid redownloading
+      # - /path/to/local/models:/root/.cache/huggingface
+
+      # Use 'ipc: host' to allow the container to access the host's shared memory (effectively 'max')
+    ipc: host
+
+    # GPU Configuration
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
