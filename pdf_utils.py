@@ -6,18 +6,16 @@ from PIL import Image
 
 def pdf_to_images_high_quality(pdf_path, dpi=144, image_format="PNG"):
     """
-    Convert PDF to images
+    Convert PDF to images using a generator (streaming, memory-efficient)
 
     Args:
         pdf_path: Path to PDF file
         dpi: Resolution for conversion (default 144)
         image_format: Output image format (default PNG)
 
-    Returns:
-        List of PIL Image objects
+    Yields:
+        PIL Image objects one at a time (memory-efficient streaming)
     """
-    images = []
-
     pdf_document = fitz.open(pdf_path)
 
     zoom = dpi / 72.0
@@ -40,7 +38,12 @@ def pdf_to_images_high_quality(pdf_path, dpi=144, image_format="PNG"):
                 background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
                 img = background
 
-        images.append(img)
+        # Yield image immediately instead of storing in list
+        yield img
+
+        # Explicit cleanup
+        del pixmap
+        if hasattr(img_data, 'close'):
+            img_data.close()
 
     pdf_document.close()
-    return images

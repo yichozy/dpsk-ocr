@@ -392,18 +392,21 @@ class DeepseekOCRForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
                     # P, C, H, W = patches.shape
                     # crop_flag = 1
                     local_features_1 = self.sam_model(patches)
-                    #TODO del patches 
+                    # Explicit cleanup of intermediate tensors
+                    del patches
                     # torch.compiler.cudagraph_mark_step_begin()
-                    local_features_2 = self.vision_model(patches, local_features_1)  
+                    local_features_2 = self.vision_model(images_crop[jdx][0].to(torch.bfloat16), local_features_1)
 
-
-                    local_features = torch.cat((local_features_2[:, 1:], local_features_1.flatten(2).permute(0, 2, 1)), dim=-1) 
+                    # Clean up intermediate feature tensors
+                    local_features = torch.cat((local_features_2[:, 1:], local_features_1.flatten(2).permute(0, 2, 1)), dim=-1)
+                    del local_features_1, local_features_2
                     local_features = self.projector(local_features)
 
 
                     global_features_1 = self.sam_model(image_ori)
-                    global_features_2 = self.vision_model(image_ori, global_features_1) 
-                    global_features = torch.cat((global_features_2[:, 1:], global_features_1.flatten(2).permute(0, 2, 1)), dim=-1) 
+                    global_features_2 = self.vision_model(image_ori, global_features_1)
+                    global_features = torch.cat((global_features_2[:, 1:], global_features_1.flatten(2).permute(0, 2, 1)), dim=-1)
+                    del global_features_1, global_features_2
                     global_features = self.projector(global_features)
 
                     if PRINT_NUM_VIS_TOKENS:
@@ -436,11 +439,15 @@ class DeepseekOCRForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
                     local_features = local_features.view(-1, n_dim2)
 
                     global_local_features = torch.cat([local_features, global_features, self.view_seperator[None, :]], dim=0)
-                
+
+                    # Clean up intermediate tensors
+                    del local_features, global_features
+
                 else:
                     global_features_1 = self.sam_model(image_ori)
-                    global_features_2 = self.vision_model(image_ori, global_features_1) 
-                    global_features = torch.cat((global_features_2[:, 1:], global_features_1.flatten(2).permute(0, 2, 1)), dim=-1) 
+                    global_features_2 = self.vision_model(image_ori, global_features_1)
+                    global_features = torch.cat((global_features_2[:, 1:], global_features_1.flatten(2).permute(0, 2, 1)), dim=-1)
+                    del global_features_1, global_features_2
                     global_features = self.projector(global_features)
 
                     if PRINT_NUM_VIS_TOKENS:
@@ -462,7 +469,14 @@ class DeepseekOCRForCausalLM(nn.Module, SupportsMultiModal, SupportsPP):
 
                     global_local_features = torch.cat([global_features, self.view_seperator[None, :]], dim=0)
 
+                    # Clean up intermediate tensors
+                    del global_features
+
                 images_in_this_batch.append(global_local_features)
+
+                # Explicit GPU memory cleanup after each image
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         return images_in_this_batch
 
